@@ -1,0 +1,22 @@
+# API keys
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug / temp files
+_*.txt
+unmapped_stocks.txt
+
+# Claude
+.claude/
