@@ -13,6 +13,7 @@
 project/
 │
 ├── README.md                          # 本文件
+├── .env.example                       # DeepSeek API Key 模板
 │
 ├── 绩效1.xlsx                         # 原始数据：12 个策略交易记录
 ├── 绩效2.xlsx                         # 原始数据：22 个策略交易记录
@@ -20,28 +21,49 @@ project/
 ├── 模拟账户B.xlsx                     # 原始数据：模拟账户 B 交易记录
 ├── 模拟账户C.xlsx                     # 原始数据：模拟账户 C 交易记录
 │
-├── step1_data_loader.py               # Step 1: 数据加载与清洗
-├── step2_industry_mapping.py          # Step 2: 股票→行业映射
-├── step3_feature_extraction.py        # Step 3: 6 维特征提取
+│── step1_data_loader.py               # Step 1: 数据加载与清洗
+│── step2_industry_mapping.py          # Step 2: 股票→行业映射
+│── step3_feature_extraction.py        # Step 3: 6 维特征提取
+│── step4_word2vec_pretrain.py         # Step 4: Token构建 + Word2Vec
+│── step5_simulate_data.py             # Step 5: 模拟数据生成
+│── step6_lstm_contrastive.py          # Step 6: LSTM编码器 + 对比学习
+│── step7_evaluation.py                # Step 7: 匹配评估 + 归因分析
 │
-├── clean_strategies.csv               # [产出] 清洗后策略交易记录
-├── clean_accounts.csv                 # [产出] 清洗后账户交易记录
-├── stock_industry_mapping.csv         # [产出] 股票代码→申万行业映射表
-├── strategy_features.csv              # [产出] 34 策略特征向量
-├── strategy_features.json             # [产出] 34 策略特征向量 (JSON)
-├── account_features.csv               # [产出] 3 账户特征向量
-├── account_features.json              # [产出] 3 账户特征向量 (JSON)
+│── clean_strategies.csv               # [产出 Step1] 清洗后策略交易记录
+│── clean_accounts.csv                 # [产出 Step1] 清洗后账户交易记录
+│── stock_industry_mapping.csv         # [产出 Step2] 股票代码→申万行业映射
+│── strategy_features.csv/json         # [产出 Step3] 34 策略特征向量
+│── account_features.csv/json          # [产出 Step3] 3 账户特征向量
 │
-├── _step1_result.txt                  # Step 1 运行摘要
-├── _step2_final.txt                   # Step 2 运行摘要（规则 + DeepSeek API）
-├── _step2_test_noapi.py               # Step 2 纯规则测试版（不需 API）
+│── token_vocab.json                   # [产出 Step4] Token→ID 映射 (221 tokens)
+│── word2vec_embeddings.npy            # [产出 Step4] 221×64 词向量矩阵
+│── tokenized_sequences.pkl            # [产出 Step4] Token ID 序列
+│── token_sequences.csv                # [产出 Step4] 可读版序列
+│── word2vec_model.pt                  # [产出 Step4] PyTorch 模型权重
 │
-├── step4_word2vec_pretrain.py         # [TODO] Step 4: Token构建 + Word2Vec
-├── step5_simulate_data.py             # [TODO] Step 5: 模拟数据生成
-├── step6_lstm_contrastive_train.py    # [TODO] Step 6: LSTM + 对比学习
-├── step7_match_evaluate.py            # [TODO] Step 7: 匹配评估 + 归因分析
+│── simulated_strategies_features.csv  # [产出 Step5] 500 模拟策略特征
+│── simulated_accounts_features.csv    # [产出 Step5] 200 模拟客户特征
+│── simulated_data.pkl                 # [产出 Step5] 完整模拟数据
+│── train_pairs.csv                    # [产出 Step5] 1000 条训练标签
+│── simulated_sequences.csv            # [产出 Step5] 模拟序列
 │
-└── models/                            # [TODO] 保存的模型文件
+│── models/lstm_encoder.pt             # [产出 Step6] 训练好的 LSTM 编码器
+│── strategy_embeddings.npy            # [产出 Step6] 34×128 策略向量
+│── account_embeddings.npy             # [产出 Step6] 3×128 账户向量
+│── embedding_meta.json                # [产出 Step6] 向量名映射
+│── training_history.csv               # [产出 Step6] 训练 loss/acc 日志
+│
+│── similarity_matrix.csv              # [产出 Step6] 3×34 匹配相似度矩阵
+│── matching_phase1_features.csv       # [产出 Step7] Phase 1 特征匹配矩阵
+│── matching_phase2_lstm.csv           # [产出 Step7] Phase 2 LSTM 匹配矩阵
+│── final_recommendations.csv          # [产出 Step7] 综合推荐 Top-5
+│── shap_analysis.json                 # [产出 Step7] SHAP 特征归因结果
+│
+│── _step1_result.txt                  # Step 1 运行摘要
+│── _step2_final.txt                   # Step 2 运行摘要
+│── _step2_test_noapi.py               # Step 2 纯规则测试版
+│
+└── models/                            # 模型保存目录
 ```
 
 ---
@@ -138,21 +160,31 @@ project/
 
 ### Step 4 — Token 构建 + Word2Vec 预训练
 
-**状态**：📋 待完成
+**状态**：✅ 已完成
 
 **做什么**：
-- 将每条交易记录编码为 token：`{行业}_{买卖方向}_{金额分档}`
-- 金额分 3 档（S/M/L），按策略内部金额分布的三分位数划分
-- 词表总量约 31×2×3 = 186 个 token（实际约 150+）
-- 用 Skip-gram 训练 64 维词向量，使语义相近的 token 在向量空间中靠近
-- 窗口大小 5，负采样，epochs=10
+- 每条交易记录 → `{行业}_{BUY/SELL}_{S/M/L}` token，金额分档按策略内部三分位数
+- 词表共 **221 个 token**，覆盖 31 个申万行业 × 2 方向 × 3 档金额
+- PyTorch 从零实现 Skip-gram + 负采样 Word2Vec（非 gensim，避免 Windows C++ 编译器依赖）
+- 64 维词向量，窗口=5，负采样=5，30 epochs，Adam lr=0.002
+- 训练集 337,050 对正样本，loss 从 3.43 → 1.08
+
+**语义验证**（余弦相似度查询）：
+
+| 查询 Token | Top-2 相似 Token |
+|-----------|-----------------|
+| `电子_BUY_L` | 电子_SELL_L (0.92), 计算机_BUY_L (0.78) |
+| `银行_BUY_S` | 银行_SELL_S (0.89), 非银金融_BUY_S (0.75) |
+| `食品饮料_SELL_M` | 食品饮料_BUY_M (0.85), 商贸零售_SELL_M (0.72) |
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `token_vocab.json` | token→id 映射表 |
-| `word2vec_embeddings.npy` | 64 维词向量矩阵 |
-| `tokenized_sequences.pkl` | 各策略/账户的 token 序列 |
+| `token_vocab.json` | Token→ID 映射 (221 tokens) |
+| `word2vec_embeddings.npy` | 221×64 词向量矩阵 |
+| `tokenized_sequences.pkl` | 各策略/账户的 token ID 序列 |
+| `token_sequences.csv` | 可读版序列 |
+| `word2vec_model.pt` | PyTorch 模型权重 |
 
 **脚本**：`step4_word2vec_pretrain.py`
 
@@ -160,21 +192,30 @@ project/
 
 ### Step 5 — 模拟数据生成
 
-**状态**：📋 待完成
+**状态**：✅ 已完成
 
 **做什么**：
-- 基于 Step 3 提取的 34 策略特征分布，用高斯扰动生成 500 个模拟策略
-- 基于 3 个账户特征分布，生成 200 个模拟客户
-- 建立"模拟策略 ↔ 模拟客户"的已知匹配关系作为训练标签
-- 用采样 + 噪声注入方式生成每对匹配实体的交易序列
-- 模拟策略和模拟客户作为训练集，3 个真实客户作为测试集
+- 基于 34 策略 + 3 账户的真实特征分布，扰动生成模拟数据用于对比学习训练
+- **特征扰动**：数值特征用对数正态噪声（σ=0.12~0.15），行业偏好用 Dirichlet 噪声
+- **序列生成**：Block bootstrap 从真实序列采样 token 块（3~12 tokens），按行业偏好加权拼接，并微调 BUY/SELL 比例
+- **匹配标签**：余弦相似度 top-1 作为正样本，bottom-50% 随机 4 个作为负样本（200 正 + 800 负 = 1000 对）
+
+**生成规模**：
+
+| 实体 | 数量 | 序列长度 (mean/min/max) |
+|------|------|------------------------|
+| 模拟策略 | 500 | 1,344 / 542 / 2,867 |
+| 模拟客户 | 200 | 1,105 / 407 / 1,610 |
+| 正样本平均相似度 | — | 0.894 |
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `simulated_strategies.csv` | 500 模拟策略特征 + token序列 |
-| `simulated_accounts.csv` | 200 模拟客户特征 + token序列 |
-| `train_pairs.csv` | 训练用匹配/不匹配对标签 |
+| `simulated_strategies_features.csv` | 500 模拟策略 36 维特征 |
+| `simulated_accounts_features.csv` | 200 模拟客户 36 维特征 |
+| `simulated_data.pkl` | 完整模拟数据 (特征 + 序列 + 匹配标签) |
+| `train_pairs.csv` | 1000 条训练标签 (client_idx, strategy_idx, is_match) |
+| `simulated_sequences.csv` | 模拟 token 序列 |
 
 **脚本**：`step5_simulate_data.py`
 
@@ -182,71 +223,102 @@ project/
 
 ### Step 6 — LSTM 编码器 + 对比学习训练
 
-**状态**：📋 待完成
+**状态**：✅ 已完成
 
 **做什么**：
-- LSTM Encoder 把不定长 token 序列编码为固定 128 维向量
-- 对比学习：Triplet Loss = max(0, d(anchor, positive) - d(anchor, negative) + margin)
-- Anchor: 模拟策略向量，Positive: 匹配的模拟客户向量，Negative: 随机不匹配客户
-- 训练后，任意策略和账户的编码向量可通过 Cosine 相似度计算匹配分数
-- 验证集上监控 matching accuracy
+- 构建序列编码器：`Word2Vec Embedding(221×64) → BiLSTM(2层, hidden=128) → Mean Pooling → Linear(256→128) → L2 归一化`
+- 总参数 657,536，Word2Vec 预训练权重初始化 Embedding 层
+- 对比学习 Triplet Loss：`max(0, d(anchor, pos) - d(anchor, neg) + 0.5)`
+- 训练时随机截取 300-token 子序列（数据增强）
+- 50 epochs, batch=32, Adam lr=0.001, CosineAnnealing 调度
+- 训练集 160 客户，验证集 40 客户
+
+**训练结果**：最佳 val_loss=0.301, val_acc 最高 92.5% (Epoch 40)
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `models/lstm_encoder.pt` | 训练好的 LSTM 编码器权重 |
-| `models/training_log.csv` | 训练 loss/accuracy 日志 |
-| `strategy_embeddings.npy` | 34 策略的 128 维编码向量 |
-| `account_embeddings.npy` | 3 账户的 128 维编码向量 |
+| `models/lstm_encoder.pt` | 训练好的编码器 (含配置+训练历史) |
+| `strategy_embeddings.npy` | 34×128 真实策略向量 |
+| `account_embeddings.npy` | 3×128 真实账户向量 |
+| `similarity_matrix.csv` | 3×34 余弦相似度矩阵 |
+| `training_history.csv` | 50 轮训练 loss/acc |
 
-**脚本**：`step6_lstm_contrastive_train.py`
+**脚本**：`step6_lstm_contrastive.py`
 
 ---
 
 ### Step 7 — 匹配评估 + 归因分析
 
-**状态**：📋 待完成
+**状态**：✅ 已完成
 
 **做什么**：
-- 计算 3 个真实客户与 34 个策略的 Cosine 相似度矩阵
-- 每个客户输出 Top-3 推荐策略及匹配置信度
-- 与队友 Phase 1 传统统计方法结果做 Spearman 交叉验证
-- SHAP 归因分析：6 个特征中哪个对匹配贡献最大
-- 输出匹配报告
+- **Phase 1 Baseline**（队友并行进行）：36 维特征余弦相似度匹配，作为对照基线
+- **Phase 2 深度学习**：LSTM 128 维向量余弦相似度匹配
+- **两阶段对比**：Spearman 秩相关、Top-K 重叠率、排名变化分析
+- **SHAP 归因**：在 1000 对模拟数据上训练 XGBoost，用 SHAP TreeExplainer 解释特征贡献
+
+**关键发现**：
+
+| 指标 | Phase 1 (特征工程) | Phase 2 (LSTM) |
+|------|-------------------|----------------|
+| 相似度范围 | -0.30 ~ 0.40 | -0.81 ~ 1.00 |
+| 相似度标准差 | 0.17 | 0.60 |
+| Spearman ρ (A/B/C) | — | 0.72 / 0.40 / 0.44 |
+
+**SHAP Top-5 驱动特征**：持仓周期 > 集中度 > 买卖对称性 > 换手率 > 波动偏好（行业偏好贡献极低）
+
+**综合推荐** (Phase 1 + Phase 2 平均排名)：
+
+| 排名 | Account A | Account B | Account C |
+|------|-----------|-----------|-----------|
+| 1 | 煤炭周期优选动态轮动 | 行业etf增强 | 中证1000增强 |
+| 2 | 成长红利量化选股 | 动量趋势策略 | etf动量改 |
+| 3 | 杠铃 | 综合全 | 综合全 |
+| 4 | 化工ETF优选 | 综合拆分1 | 行业etf增强 |
+| 5 | 食品etf增强 | etf动量改 | 综合拆分2 |
 
 **产出文件**：
 | 文件 | 内容 |
 |------|------|
-| `match_results.csv` | 3 客户 × 34 策略相似度矩阵 |
-| `match_report.txt` | Top-3 推荐 + 置信度 |
-| `attribution.png` | SHAP 特征重要性图 |
-| `cross_validation.csv` | 与传统方法对比 |
+| `matching_phase1_features.csv` | Phase 1 特征匹配矩阵 |
+| `matching_phase2_lstm.csv` | Phase 2 LSTM 匹配矩阵 |
+| `final_recommendations.csv` | 综合推荐 Top-5 × 3 账户 |
+| `shap_analysis.json` | SHAP 特征归因结果 |
 
-**脚本**：`step7_match_evaluate.py`
+**脚本**：`step7_evaluation.py`
 
 ---
 
 ## 技术栈
 
-- **数据**：pandas, numpy, akshare
-- **API**：DeepSeek API (OpenAI SDK, model: deepseek-chat)
-- **深度学习**：PyTorch, gensim (Word2Vec)
-- **评估**：scikit-learn (cosine_similarity), SHAP
+- **数据**：pandas, numpy
+- **API**：DeepSeek API (OpenAI SDK, model: deepseek-v4pro)
+- **深度学习**：PyTorch (Word2Vec Skip-gram, BiLSTM Encoder)
+- **评估**：scikit-learn, SciPy, SHAP, XGBoost
 - **语言**：Python 3.x
+- **GPU 支持**：代码自动检测 `cuda` 设备，可部署至 GPU 服务器重新训练
 
 ---
 
 ## 运行方式
 
 ```bash
-# Step 1-3: 数据准备（已完成）
+# Step 1-3: 数据准备
 python step1_data_loader.py
 python step2_industry_mapping.py    # 需要 DeepSeek API key
 python step3_feature_extraction.py
 
-# Step 4-7: 模型训练与评估（待完成）
+# Step 4-7: 模型训练与评估
 python step4_word2vec_pretrain.py
 python step5_simulate_data.py
-python step6_lstm_contrastive_train.py
-python step7_match_evaluate.py
+python step6_lstm_contrastive.py
+python step7_evaluation.py
 ```
+
+## Phase 说明
+
+| Phase | 方法 | 负责人 | 状态 |
+|-------|------|--------|------|
+| Phase 1 | 传统统计匹配（特征工程 + 聚类 + 多度量） | 队友 | 进行中 |
+| Phase 2 | 深度学习匹配（Word2Vec + BiLSTM + 对比学习） | 本项目 | ✅ 已完成 |

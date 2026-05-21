@@ -18,5 +18,9 @@ Thumbs.db
 _*.txt
 unmapped_stocks.txt
 
+# Project docs
+*.docx
+*.pdf
+
 # Claude
 .claude/
